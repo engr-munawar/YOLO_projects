@@ -21,9 +21,9 @@ class ScratchDetector:
                 if conf > 0.5:
                     scratches.append({
                         'confidence': float(conf),  # Convert to native float
-                        'bbox': [float(x) for x in box.tolist()],  # Convert to native floats
-                        'length': float(self._calculate_length(box)),  # Convert to native float
-                        'severity': self._assess_scratch_severity(conf, box)
+                        #'bbox': [float(x) for x in box.tolist()],  # Convert to native floats
+                        #'length': float(self._calculate_length(box)),  # Convert to native float
+                        #'severity': self._assess_scratch_severity(conf, box)
                     })
         
         return {

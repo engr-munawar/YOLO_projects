@@ -21,9 +21,9 @@ class DentDetector:
                 if conf > 0.5:
                     dents.append({
                     'confidence': float(conf),  # Convert to native float
-                    'bbox': [float(x) for x in box.tolist()],  # Convert to native floats
-                    'area': float(self._calculate_area(box)),  # Convert to native float
-                    'severity': self._assess_dent_severity(conf, box)
+                    #'bbox': [float(x) for x in box.tolist()],  # Convert to native floats
+                    #'area': float(self._calculate_area(box)),  # Convert to native float
+                    #'severity': self._assess_dent_severity(conf, box)
                     })
         
         return {

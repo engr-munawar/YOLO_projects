@@ -6,7 +6,7 @@ from typing import List, Dict, Any
 class DamageDetector:
     def __init__(self, model_path: str = "models/damage_detector.pt"):
         self.model = YOLO(model_path)
-        self.damage_classes = ["door_damage", "headlight_damage", "rearbumper_damage", "bonnet_damage", "windscreen_damage", "rearscreen_damage", "taillight_damage", "roof_damage","luggage_door_damage", "fender_damage", "doorscreen_damage", "frontbumper_damage"]
+        self.damage_classes = ["door_damage", "headlight_damage", "rearbumper_damage", "bonnet_damage", "frontwindscreen_damage", "rearscreen_damage", "taillight_damage", "roof_damage","luggage_door_damage", "fender_damage", "doorscreen_damage", "frontbumper_damage"]
     
     def detect(self, image: np.ndarray) -> Dict[str, Any]:
         """Detect various types of damages"""

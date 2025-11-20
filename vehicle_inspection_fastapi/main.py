@@ -1,11 +1,11 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uuid
 import os
 import json
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import cv2
 import numpy as np
 
@@ -54,9 +54,7 @@ class VehicleInspection:
                 "scratches_count": 0,
                 "total_assessment_score": 100  # Start with perfect score
             },
-
             "images": {}
-            
         }
     
     def process_image(self, image_path: str, view_type: str) -> Dict[str, Any]:
@@ -294,31 +292,31 @@ class VehicleInspection:
         )
 
 def prepare_assessment_response(assessment: Dict) -> Dict:
-        """
-        Convert all NumPy types to native Python types for JSON serialization
-        """
-        import numpy as np
-        
-        def convert_numpy_types(obj):
-            """Recursively convert NumPy types to native Python types"""
-            if isinstance(obj, dict):
-                return {key: convert_numpy_types(value) for key, value in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_numpy_types(item) for item in obj]
-            elif isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, (np.float32, np.float64)):
-                return float(obj)
-            elif isinstance(obj, (np.int32, np.int64, np.int16, np.int8)):
-                return int(obj)
-            elif isinstance(obj, np.bool_):
-                return bool(obj)
-            elif hasattr(obj, 'tolist'):  # Handle other array-like objects
-                return obj.tolist()
-            else:
-                return obj
-        
-        return convert_numpy_types(assessment)
+    """
+    Convert all NumPy types to native Python types for JSON serialization
+    """
+    import numpy as np
+    
+    def convert_numpy_types(obj):
+        """Recursively convert NumPy types to native Python types"""
+        if isinstance(obj, dict):
+            return {key: convert_numpy_types(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_numpy_types(item) for item in obj]
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, (np.int32, np.int64, np.int16, np.int8)):
+            return int(obj)
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        elif hasattr(obj, 'tolist'):  # Handle other array-like objects
+            return obj.tolist()
+        else:
+            return obj
+    
+    return convert_numpy_types(assessment)
 
 @app.get("/")
 async def root():
@@ -331,62 +329,76 @@ async def health_check():
 @app.post("/inspect-vehicle")
 async def inspect_vehicle(
     background_tasks: BackgroundTasks,
-    front_image: UploadFile = File(...),
-    back_image: UploadFile = File(...),
-    left_image: UploadFile = File(...),
-    right_image: UploadFile = File(...)
+    files: List[UploadFile] = File(...)
 ):
-    """Main endpoint for vehicle inspection"""
-    try:
-        # Validate file types
-        allowed_types = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp']
-        for file in [front_image, back_image, left_image, right_image]:
-            if file.content_type not in allowed_types:
-                raise HTTPException(400, f"Invalid file type for {file.filename}")
-        
-        # Create new inspection
-        inspection = VehicleInspection()
-        
-        # Process each image
-        images = {
-            "front": front_image,
-            "back": back_image, 
-            "left": left_image,
-            "right": right_image
-        }
-        
-        for view_type, image_file in images.items():
-            # Save uploaded image
-            image_path = f"temp_images/{inspection.car_id}_{view_type}.jpg"
-            with open(image_path, "wb") as buffer:
-                content = await image_file.read()
-                buffer.write(content)
-            
-            # Process image
-            image_assessment = inspection.process_image(image_path, view_type)
-            inspection.assessment["images"][view_type] = image_assessment
-        
-        # Combine license plates from all images
-        inspection.combine_license_plates()
-        
-        # Store assessment (convert to serializable format)
-        serializable_assessment = prepare_assessment_response(inspection.assessment)
-        assessments_db[inspection.car_id] = serializable_assessment
-        
-        # Schedule cleanup
-        background_tasks.add_task(cleanup_temp_files, inspection.car_id)
-        
-        return JSONResponse(
-            status_code=200,
-            content={
-                "message": "Vehicle inspection completed successfully",
-                #"car_id": inspection.car_id,
-                "assessment": serializable_assessment  # Use the serializable version
-            }
-        )
-         
-    except Exception as e:
-        raise HTTPException(500, f"Inspection failed: {str(e)}")
+    """
+    Required image names:
+      1. front
+      2. back
+      3. left
+      4. right
+
+    Optional image names:
+      5. angle1
+      6. angle2
+      7. angle3
+    """
+
+    # Must have at least 4 images
+    if len(files) < 4:
+        raise HTTPException(400, "At least 4 images required: front, back, left, right")
+
+    # Max allowed is 7 images
+    if len(files) > 7:
+        raise HTTPException(400, "Maximum 7 images allowed")
+
+    inspection = VehicleInspection()
+
+    # View name order matching your naming convention
+    view_types = [
+        "front",
+        "back",
+        "left",
+        "right",
+        "angle1",
+        "angle2",
+        "angle3"
+    ]
+
+    processed_views = []
+
+    # Process each uploaded image
+    for i, file in enumerate(files):
+        view = view_types[i]
+
+        save_path = f"temp_images/{inspection.car_id}_{view}.jpg"
+
+        # Save upload
+        with open(save_path, "wb") as f:
+            f.write(await file.read())
+
+        # Run the assessment for this single view
+        assessment = inspection.process_image(save_path, view)
+        inspection.assessment["images"][view] = assessment
+
+        processed_views.append(view)
+
+    # Combine plates
+    inspection.combine_license_plates()
+
+    # Convert response to pure Python types
+    final = prepare_assessment_response(inspection.assessment)
+
+    assessments_db[inspection.car_id] = final
+
+    # Cleanup background task
+    background_tasks.add_task(cleanup_temp_files, inspection.car_id)
+
+    return {
+        #"car_id": inspection.car_id,
+        "processed_views": processed_views,
+        "assessment": final
+    }
 
 
 @app.get("/assessment/{car_id}")
@@ -409,23 +421,9 @@ async def cleanup_temp_files(car_id: str):
     for file in files:
         try:
             os.remove(file)
-        except:
-            pass
-def find_non_serializable(obj, path=""):
-    """Find non-serializable objects in a dictionary"""
-    import numpy as np
-    
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            new_path = f"{path}.{key}" if path else key
-            find_non_serializable(value, new_path)
-    elif isinstance(obj, list):
-        for i, item in enumerate(obj):
-            new_path = f"{path}[{i}]"
-            find_non_serializable(item, new_path)
-    else:
-        if isinstance(obj, (np.ndarray, np.float32, np.float64, np.int32, np.int64)):
-            print(f"Non-serializable found at {path}: {type(obj)} - {obj}")
+            print(f"🧹 Cleaned up temporary file: {file}")
+        except Exception as e:
+            print(f"⚠️  Could not delete {file}: {e}")
 
 @app.post("/test-detectors")
 async def test_detectors(file: UploadFile = File(...)):
