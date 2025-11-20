@@ -5,7 +5,7 @@ import uuid
 import os
 import json
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 import cv2
 import numpy as np
 
@@ -290,6 +290,21 @@ class VehicleInspection:
             summary["total_assessment_score"],
             image_assessment["assessment_score"]
         )
+        # REMOVE damaged parts from missing parts
+
+        clean_missing_parts = []
+        damaged_set = set(summary["damaged_parts"])
+
+        for part in summary["missing_parts"]:
+            if part not in damaged_set:
+                clean_missing_parts.append(part)
+
+        summary["missing_parts"] = clean_missing_parts
+        normalized_damaged = {d.lower().strip() for d in summary["damaged_parts"]}
+
+        summary["missing_parts"] = [
+            m for m in summary["missing_parts"]
+            if m.lower().strip() not in normalized_damaged]
 
 def prepare_assessment_response(assessment: Dict) -> Dict:
     """
@@ -326,77 +341,80 @@ async def root():
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
+from fastapi import UploadFile, File, BackgroundTasks, HTTPException
+
 @app.post("/inspect-vehicle")
 async def inspect_vehicle(
     background_tasks: BackgroundTasks,
-    files: List[UploadFile] = File(...)
+    
+    # Required images
+    front: UploadFile = File(..., description="Front view image (REQUIRED)"),
+    back: UploadFile = File(..., description="Back view image (REQUIRED)"),
+    left: UploadFile = File(..., description="Left view image (REQUIRED)"),
+    right: UploadFile = File(..., description="Right view image (REQUIRED)"),
+    # optional images
+    angle_1: Union[UploadFile, None, str] = File(None), # without union we have to manually uncheck optional image if don't upload the image otherwise it throws error
+    angle_2: Union[UploadFile, None, str] = File(None),
+    angle_3: Union[UploadFile, None, str] = File(None)
 ):
-    """
-    Required image names:
-      1. front
-      2. back
-      3. left
-      4. right
+    
+    REQUIRED = {
+        "front": front,
+        "back": back,
+        "left": left,
+        "right": right
+    }
 
-    Optional image names:
-      5. angle1
-      6. angle2
-      7. angle3
-    """
-
-    # Must have at least 4 images
-    if len(files) < 4:
-        raise HTTPException(400, "At least 4 images required: front, back, left, right")
-
-    # Max allowed is 7 images
-    if len(files) > 7:
-        raise HTTPException(400, "Maximum 7 images allowed")
+    OPTIONAL = {
+        "angle_1": angle_1,
+        "angle_2": angle_2,
+        "angle_3": angle_3
+    }
 
     inspection = VehicleInspection()
 
-    # View name order matching your naming convention
-    view_types = [
-        "front",
-        "back",
-        "left",
-        "right",
-        "angle1",
-        "angle2",
-        "angle3"
-    ]
-
-    processed_views = []
-
-    # Process each uploaded image
-    for i, file in enumerate(files):
-        view = view_types[i]
+    # Save + process required images
+    for view, file in REQUIRED.items():
+        if file is None:
+            raise HTTPException(400, f"Missing required image: {view}")
 
         save_path = f"temp_images/{inspection.car_id}_{view}.jpg"
-
-        # Save upload
         with open(save_path, "wb") as f:
             f.write(await file.read())
 
-        # Run the assessment for this single view
         assessment = inspection.process_image(save_path, view)
         inspection.assessment["images"][view] = assessment
 
-        processed_views.append(view)
+    # --- Process optional views safely ---
+    for view, file in OPTIONAL.items():
+        if not isinstance(file, UploadFile):  # Skip "", None, or bad types
+            print(f"Skipping optional view {view} — no file uploaded.")
+            continue
+
+        save_path = f"temp_images/{inspection.car_id}_{view}.jpg"
+        with open(save_path, "wb") as f:
+            f.write(await file.read())
+
+            assessment = inspection.process_image(save_path, view)
+            inspection.assessment["images"][view] = assessment
 
     # Combine plates
     inspection.combine_license_plates()
 
-    # Convert response to pure Python types
+    # Convert result for JSON
     final = prepare_assessment_response(inspection.assessment)
-
     assessments_db[inspection.car_id] = final
 
-    # Cleanup background task
+    # Cleanup
     background_tasks.add_task(cleanup_temp_files, inspection.car_id)
 
     return {
+        "message": "Inspection completed successfully",
         #"car_id": inspection.car_id,
-        "processed_views": processed_views,
+        "uploaded_images": {
+            "required": list(REQUIRED.keys()),
+            "optional": [v for v, f in OPTIONAL.items() if f is not None]
+        },
         "assessment": final
     }
 
