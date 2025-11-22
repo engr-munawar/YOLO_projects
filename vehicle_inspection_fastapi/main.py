@@ -57,23 +57,43 @@ class VehicleInspection:
             "images": {}
         }
     
+        
     def process_image(self, image_path: str, view_type: str) -> Dict[str, Any]:
         """Process a single car image for complete assessment"""
         try:
-            print(f"Processing {view_type} image: {image_path}")
+            print(f"\nProcessing {view_type} image: {image_path}")
             
             # Read and validate image
             image = cv2.imread(image_path)
             if image is None:
-                return {"error": f"Could not read image at {image_path}", "view_type": view_type}
-            
+                return {
+                    "view_type": view_type,
+                    "error": f"Could not read image at {image_path}",
+                    "parts_detected": [],
+                    "missing_parts": [],
+                    "damages": [],
+                    "dents": [],
+                    "scratches": [],
+                    "assessment_score": 0,
+                    "license_plate": {"combined_text": "ERROR"}
+                }
             print(f"Image loaded successfully, shape: {image.shape}")
             
             # Segment the car first
             print("Starting car segmentation...")
             segmented_image = detect_and_segment_user_car(image_path)
             if segmented_image is None:
-                return {"error": "Could not detect car in image", "view_type": view_type}
+                return {
+                "view_type": view_type,
+                "error": "Could not detect car in image",
+                "parts_detected": [],
+                "missing_parts": [],
+                "damages": [],
+                "dents": [],
+                "scratches": [],
+                "assessment_score": 0,
+                "license_plate": {"combined_text": "NO_PLATE_DETECTED"}
+                }
             
             print(f"Segmentation successful, segmented image shape: {segmented_image.shape}")
             
@@ -87,8 +107,29 @@ class VehicleInspection:
             combined_text = plate_result.get('combined_text', 'NO_PLATE_DETECTED')
             print(f"Plate detection result: {combined_text}")
             
-            # Run other detectors
+            # Run other detectors, first parts detector if view is valid then other detectors
             parts_assessment = parts_detector.detect(segmented_image, view_type)
+            # Check if parts detection returned a view validation error
+            # If view validation fails - DO NOT STOP PIPELINE
+            if parts_assessment.get("error"):
+                print(f"❌ View validation failed for {view_type}")
+
+                return {
+                    "view_type": view_type,
+                    "uploaded_view": f"{view_type}_side",
+                    "detected_view": parts_assessment.get("detected_view", "unknown"),
+                    "license_plate": {"combined_text": "VIEW_VALIDATION_FAILED"},
+                    "parts_detected": [],
+                    "missing_parts": parts_assessment.get("missing_parts", []),
+                    "damages": [],
+                    "dents": [],
+                    "scratches": [],
+                    "assessment_score": 0,
+                    "error": parts_assessment.get("error", "Invalid image view"),
+                }
+            
+            # If view is valid, continue with other detectors
+
             damage_assessment = damage_detector.detect(segmented_image)
             dent_assessment = dent_detector.detect(segmented_image)
             scratch_assessment = scratch_detector.detect(segmented_image)
@@ -102,28 +143,32 @@ class VehicleInspection:
             
             # Compile image assessment
             image_assessment = {
-                "view_type": view_type,
-                "license_plate": plate_data,  # Only contains combined_text
-                "parts_detected": parts_assessment.get("detected_parts", []),
-                "missing_parts": parts_assessment.get("missing_parts", []),
-                "damages": damage_assessment.get("damages", []),
-                "dents": dent_assessment.get("dents", []),
-                "scratches": scratch_assessment.get("scratches", []),
-                "assessment_score": self._calculate_image_score(
-                    parts_assessment, damage_assessment, dent_assessment, scratch_assessment
-                )
+            "view_type": parts_assessment.get("uploaded_view"),
+            "license_plate": plate_data,
+            "parts_detected": parts_assessment.get("detected_parts", []),
+            "missing_parts": parts_assessment.get("missing_parts", []),
+            "damages": damage_assessment.get("damages", []),
+            "dents": dent_assessment.get("dents", []),
+            "scratches": scratch_assessment.get("scratches", []),
+            "assessment_score": self._calculate_image_score(
+                parts_assessment,
+                damage_assessment,
+                dent_assessment,
+                scratch_assessment
+            )
             }
             
-            # Update overall summary
+            # Update summary
             self._update_summary(image_assessment)
-            
+
             print(f"Successfully processed {view_type} image with plate: {combined_text}")
             return image_assessment
-        
+
         except Exception as e:
             print(f"Critical error in process_image for {view_type}: {str(e)}")
             import traceback
             traceback.print_exc()
+
             return {
                 "view_type": view_type,
                 "license_plate": {"combined_text": "ERROR"},
@@ -135,6 +180,7 @@ class VehicleInspection:
                 "assessment_score": 0,
                 "error": str(e)
             }
+        
 
     def combine_license_plates(self):
         """Simple license plate combination - use the most confident detection"""
@@ -220,46 +266,8 @@ class VehicleInspection:
         """Update the overall assessment summary"""
         summary = self.assessment["summary"]
         
-        # Track ALL detected parts across ALL images
-        all_detected_parts = set()
-        
-        # First, collect all detected parts from all images
-        for view_data in self.assessment["images"].values():
-            if "parts_detected" in view_data:
-                for part in view_data["parts_detected"]:
-                    part_name = part.get("part_name")
-                    if part_name:
-                        all_detected_parts.add(part_name)
-        
-        # Define the expected parts for a complete car
-        expected_parts = {
-            "front_bumper", "headlight", "headlight",  # 2 headlights
-            "bonnet", "front_windscreen", "sidemirror", "sidemirror",  # 2 sidemirrors
-            "door", "door", "door", "door",  # 4 doors
-            "tyre", "tyre", "tyre", "tyre",  # 4 tyres
-            "rear_bumper", "taillight", "taillight",  # 2 taillights
-            "luggage_door", "rear_windscreen"
-        }
-        
-        # Calculate missing parts: expected parts that were NOT detected in ANY image
-        detected_part_counts = {}
-        for part_name in all_detected_parts:
-            detected_part_counts[part_name] = detected_part_counts.get(part_name, 0) + 1
-        
-        # For parts that have multiple instances, check if we have the expected count
-        missing_parts = []
-        for part in expected_parts:
-            expected_count = list(expected_parts).count(part)  # Count how many times this part is expected
-            detected_count = detected_part_counts.get(part, 0)
-            
-            if detected_count < expected_count:
-                missing_parts.append(part)
-        
-        # Remove duplicates and sort
-        summary["missing_parts"] = sorted(list(set(missing_parts)))
-        
         # Update damaged parts with proper mapping
-        part_mapping = {
+        damage_to_part_mapping = {
             'bonnet_damage': 'bonnet',
             'frontbumper_damage': 'front_bumper', 
             'headlight_damage': 'headlight',
@@ -273,38 +281,65 @@ class VehicleInspection:
             'doorscreen_damage': 'door_screen',
             'roof_damage': 'roof'
         }
+        # Track parts that are detected anywhere (not damaged)
+        actually_detected_parts = set()
+        all_reported_missing_parts = []
+        all_damaged_parts = []
+        total_dents = 0
+        total_scratches = 0
+        view_scores = []
         
-        for damage in image_assessment["damages"]:
-            damage_type = damage.get("damage_type", "Unknown")
-            damaged_part = part_mapping.get(damage_type, damage_type)
+        # First pass: collect all detected parts from parts_detected
+        for view_type, view_data in self.assessment["images"].items():
+            if "parts_detected" in view_data:
+                for part in view_data["parts_detected"]:
+                    part_name = part.get("part_name")
+                    if part_name:
+                        actually_detected_parts.add(part_name)
+        
+        # Second pass: collect missing parts, damages, etc.
+        for view_type, view_data in self.assessment["images"].items():
+            # Collect missing parts
+            if "missing_parts" in view_data:
+                all_reported_missing_parts.extend(view_data["missing_parts"])
             
-            if damaged_part not in summary["damaged_parts"]:
-                summary["damaged_parts"].append(damaged_part)
+            # Collect damaged parts
+            if "damages" in view_data:
+                for damage in view_data["damages"]:
+                    damage_type = damage.get("damage_type", "")
+                    part_name = damage_to_part_mapping.get(damage_type)
+                    if part_name and part_name not in all_damaged_parts:
+                        all_damaged_parts.append(part_name)
+            
+            # Count dents and scratches
+            if "dents" in view_data:
+                total_dents += len(view_data["dents"])
+            if "scratches" in view_data:
+                total_scratches += len(view_data["scratches"])
+            
+            # Collect assessment scores
+            if "assessment_score" in view_data:
+                view_scores.append(view_data["assessment_score"])
         
-        # Update counts
-        summary["dents_count"] += len(image_assessment["dents"])
-        summary["scratches_count"] += len(image_assessment["scratches"])
+        # Reconcile: A part is only truly missing if:
+        # 1. It's reported as missing AND
+        # 2. It's not detected in ANY view AND  
+        # 3. It's not listed as damaged
+        truly_missing_parts = []
+        for part in set(all_reported_missing_parts):
+            if (part not in actually_detected_parts and 
+                part not in all_damaged_parts):
+                truly_missing_parts.append(part)
         
-        # Update overall score
-        summary["total_assessment_score"] = min(
-            summary["total_assessment_score"],
-            image_assessment["assessment_score"]
-        )
-        # REMOVE damaged parts from missing parts
-
-        clean_missing_parts = []
-        damaged_set = set(summary["damaged_parts"])
-
-        for part in summary["missing_parts"]:
-            if part not in damaged_set:
-                clean_missing_parts.append(part)
-
-        summary["missing_parts"] = clean_missing_parts
-        normalized_damaged = {d.lower().strip() for d in summary["damaged_parts"]}
-
-        summary["missing_parts"] = [
-            m for m in summary["missing_parts"]
-            if m.lower().strip() not in normalized_damaged]
+        # Update summary
+        summary["missing_parts"] = truly_missing_parts
+        summary["damaged_parts"] = all_damaged_parts
+        summary["dents_count"] = total_dents
+        summary["scratches_count"] = total_scratches
+        
+        # Calculate overall score (average of view scores)
+        if view_scores:
+            summary["total_assessment_score"] = sum(view_scores) // len(view_scores)
 
 def prepare_assessment_response(assessment: Dict) -> Dict:
     """
@@ -386,17 +421,42 @@ async def inspect_vehicle(
         inspection.assessment["images"][view] = assessment
 
     # --- Process optional views safely ---
+    
     for view, file in OPTIONAL.items():
-        if not isinstance(file, UploadFile):  # Skip "", None, or bad types
-            print(f"Skipping optional view {view} — no file uploaded.")
+        # Skip if no file was provided for this optional view
+        if file is None:
+            print(f"  ⚠️ Optional view {view} not provided; skipping")
             continue
 
-        save_path = f"temp_images/{inspection.car_id}_{view}.jpg"
-        with open(save_path, "wb") as f:
-            f.write(await file.read())
+        # Some clients may send an explicit string like "none" or "false"
+        if isinstance(file, str) and file.strip().lower() in ("", "none", "false"):
+            print(f"  ⚠️ Optional view {view} value indicates no file; skipping")
+            continue
+
+        try:
+            save_path = f"temp_images/{inspection.car_id}_{view}.jpg"
+
+            # If we received an UploadFile-like object, read and save its contents
+            if hasattr(file, "read"):
+                content = await file.read()
+                with open(save_path, "wb") as f:
+                    f.write(content)
+            else:
+                # Unknown type for optional file — skip and log
+                print(f"  ⚠️ Skipping optional view {view} - unsupported type {type(file)}")
+                continue
 
             assessment = inspection.process_image(save_path, view)
-            inspection.assessment["images"][view] = assessment
+            inspection.assessment[view] = assessment
+            print(f"✅ Processed optional view: {view}")
+
+        except Exception as e:
+            print(f"⚠️ Error processing optional view {view}: {e}")
+            inspection.assessment[view] = {
+                "view_type": view,
+                "error": str(e)
+            }
+
 
     # Combine plates
     inspection.combine_license_plates()

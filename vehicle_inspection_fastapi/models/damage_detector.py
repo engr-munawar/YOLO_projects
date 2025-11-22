@@ -27,7 +27,7 @@ class DamageDetector:
                     'damage_type': names[cls],
                     'confidence': float(conf),  # Convert to native float
                     #'bbox': [float(x) for x in box.tolist()],  # Convert to native floats
-                    'severity': self._assess_severity(conf)
+                    #'severity': self._assess_severity(conf)
                     })
         
         return {
