@@ -3,7 +3,7 @@ import numpy as np
 from ultralytics import YOLO
 from typing import Dict, Any
 
-from utils.asign_position_view_parts import (
+from utils.validate_view_parts_position import (
     assign_left_right,
     assign_door_instance,
     assign_tyre_instance,
@@ -112,27 +112,15 @@ class CarPartsDetector:
                 }
 
             # STAGE 4 — PROCESS PARTS (ONLY IF VIEW IS VALID)
-            for cls, box, conf in zip(classes, boxes, confs):
-                if conf < 0.3:
-                    continue
-                x1, y1, x2, y2 = map(int, box)
-                raw_part = names[cls]
-                conf = float(conf)
-                x_center = (x1 + x2) / 2 / img_width
+            for detection_info in detections:
 
-                detection_info = {
-                    'class_name': names[cls],
-                    'confidence': float(conf),
-                    'bbox': [int(x1), int(y1), int(x2), int(y2)],
-                    'x_center': (x1 + x2) / 2 / img_width,
-                    'y_center': (y1 + y2) / 2 / img_height,
-                    'width': (x2 - x1) / img_width,
-                    'height': (y2 - y1) / img_height
-                }
-                                
+                raw_part = detection_info["class_name"]
+                conf = detection_info["confidence"]
+                x_center = detection_info["x_center"]    
+
                 # LEFT / RIGHT LOGIC
                 if raw_part in ["headlight", "sidemirror", "taillight"]:
-                    inst = assign_left_right(raw_part, box, view_type, img_width)
+                    inst = assign_left_right(raw_part, detection_info["x_center"], view_type, img_width)
 
                 elif raw_part == "door":
                     inst = assign_door_instance(detections, detection_info, img_width, view_type)
